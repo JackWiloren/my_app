@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:uuid/uuid.dart' as uuid; // <-- добавлен префикс
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:logger/logger.dart';
 
 void main() {
   runApp(const MyApp());
@@ -31,17 +34,30 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   int _counter = 0;
-
   final FlutterReactiveBle _ble = FlutterReactiveBle();
   final List<DiscoveredDevice> _devices = [];
+  final logger = Logger();
+
+  String? _deviceUuid;
 
   @override
   void initState() {
     super.initState();
-    _initBle();
+    _initUuid().then((_) => _initBle());
   }
 
-  // Инициализация BLE и запрос разрешений
+  Future<void> _initUuid() async {
+    final prefs = await SharedPreferences.getInstance();
+    _deviceUuid = prefs.getString('device_uuid');
+
+    if (_deviceUuid == null) {
+      _deviceUuid = uuid.Uuid().v4(); // <-- используется uuid с префиксом
+      await prefs.setString('device_uuid', _deviceUuid!);
+    }
+
+    logger.d('UUID этого устройства: $_deviceUuid');
+  }
+
   void _initBle() async {
     await [
       Permission.location,
@@ -49,32 +65,44 @@ class _MyHomePageState extends State<MyHomePage> {
       Permission.bluetoothConnect,
     ].request();
 
-    // Запуск сканирования
     _ble.scanForDevices(withServices: []).listen((device) {
       if (_devices.every((d) => d.id != device.id)) {
         setState(() {
           _devices.add(device);
         });
-        print('Найдено устройство: ${device.name} | ID: ${device.id}');
+        logger.d('Найдено устройство: ${device.name} | ID: ${device.id}');
 
-        // Проверка на конкретный MAC-адрес
-        if (device.id == "XX:XX:XX:XX:XX:XX") {
-          // Замените на нужный MAC
+        if (device.id == "d8:3a:dd:de:09:80") {
           _sendMessageToDevice(device.id);
         }
       }
     });
   }
 
-  // Метод для отправки сообщения устройству
   void _sendMessageToDevice(String macAddress) async {
-    print('Отправка сообщения на устройство с MAC $macAddress');
-    // Здесь добавьте код для отправки сообщения через BLE
-    // Пример:
-    // await _ble.writeCharacteristicWithResponse(characteristic, value: [0x01, 0x02]);
+    if (_deviceUuid == null) return;
+
+    final serviceId = Uuid.parse("0000180d-0000-1000-8000-00805f9b34fb");
+    final characteristicId = Uuid.parse("00002a37-0000-1000-8000-00805f9b34fb");
+
+    try {
+      await _ble.connectToDevice(id: macAddress).first;
+
+      await _ble.writeCharacteristicWithResponse(
+        QualifiedCharacteristic(
+          serviceId: serviceId,
+          characteristicId: characteristicId,
+          deviceId: macAddress,
+        ),
+        value: _deviceUuid!.codeUnits,
+      );
+
+      logger.d("Отправлен UUID: $_deviceUuid");
+    } catch (e) {
+      logger.e("Ошибка при отправке: $e");
+    }
   }
 
-  // Увеличение счётчика
   void _incrementCounter() {
     setState(() {
       _counter++;
